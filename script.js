@@ -179,7 +179,7 @@ function initializeDragAndDrop() {
             scrollSensitivity: 100,
             scrollSpeed: 20,
             onEnd: async function () {
-                const newSeatingConfig = buildSeagittingConfigFromDOM();
+                const newSeatingConfig = buildSeatingConfigFromDOM();
                 await saveSeatingConfig(newSeatingConfig);
             },
             onMove: function (evt) {

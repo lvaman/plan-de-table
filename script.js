@@ -1,7 +1,6 @@
 // Get Firebase services
 const {
-    db, collection, doc, setDoc, onSnapshot, 
-    updateDoc, arrayUnion, arrayRemove
+    db, doc, setDoc, onSnapshot, updateDoc
 } = window.firebaseServices;
 
 // --- DOM Elements ---
@@ -13,6 +12,7 @@ const masterCounterEl = document.getElementById('master-counter');
 // --- Global State ---
 let allGuestsData = { groom: [], bride: [] };
 let currentSeatingConfig = {};
+let dataLoaded = { groom: false, bride: false, seating: false };
 
 // --- Guest Management ---
 document.getElementById('add-groom-guest-button').addEventListener('click', () => addGuest('groom'));
@@ -24,22 +24,29 @@ async function addGuest(type) {
     const inputEl = document.getElementById(`${type}-guest-input`);
     const guestName = inputEl.value.trim();
     if (guestName) {
-        const guestRef = doc(db, 'guests', type);
-        await updateDoc(guestRef, { names: arrayUnion(guestName) });
+        const guestRef = doc(db, 'seatingPlans', `${type}-guests`);
+        const namesArray = [...(allGuestsData[type] || []), guestName];
+        await setDoc(guestRef, { names: namesArray });
         inputEl.value = '';
     }
 }
 
 async function deleteGuest(type, guestName) {
     if (!confirm(`Voulez-vous supprimer ${guestName} ?`)) return;
-    
-    const guestRef = doc(db, 'guests', type);
-    await updateDoc(guestRef, { names: arrayRemove(guestName) });
 
-    Object.keys(currentSeatingConfig).forEach(zoneId => {
-        currentSeatingConfig[zoneId] = currentSeatingConfig[zoneId].filter(name => name !== guestName);
+    // Remove from the guest list document
+    const guestRef = doc(db, 'seatingPlans', `${type}-guests`);
+    const namesArray = (allGuestsData[type] || []).filter(name => name !== guestName);
+    await setDoc(guestRef, { names: namesArray });
+
+    // Remove from the main seating configuration
+    const updatedConfig = { ...currentSeatingConfig };
+    Object.keys(updatedConfig).forEach(zoneId => {
+        if (Array.isArray(updatedConfig[zoneId])) {
+            updatedConfig[zoneId] = updatedConfig[zoneId].filter(name => name !== guestName);
+        }
     });
-    await saveToFirebase(currentSeatingConfig);
+    await saveSeatingConfig(updatedConfig);
 }
 
 // --- Main Application ---
@@ -57,14 +64,44 @@ function initializeBoard() {
     initializeDragAndDrop();
 }
 
-function renderGuestLists(groomGuests, brideGuests) {
-    allGuestsData = { groom: groomGuests, bride: brideGuests };
+function renderAllGuestsAndSeating() {
     document.querySelectorAll('.guest').forEach(guestElement => guestElement.remove());
 
-    groomGuests.forEach((name) => groomListContainer.appendChild(createGuestElement('groom', name)));
-    brideGuests.forEach((name) => brideListContainer.appendChild(createGuestElement('bride', name)));
-    
-    applySeatingPlan();
+    const allGuestsMap = new Map();
+    (allGuestsData.groom || []).forEach(name => allGuestsMap.set(name, createGuestElement('groom', name)));
+    (allGuestsData.bride || []).forEach(name => allGuestsMap.set(name, createGuestElement('bride', name)));
+
+    const placedGuests = new Set();
+    // Place seated guests first
+    Object.keys(currentSeatingConfig).forEach(zoneId => {
+        const zoneElement = document.getElementById(zoneId);
+        if (zoneElement && currentSeatingConfig[zoneId]) {
+            const container = zoneElement.querySelector('.table-guests-container');
+            if (container) {
+                currentSeatingConfig[zoneId].forEach(guestName => {
+                    const guestElement = allGuestsMap.get(guestName);
+                    if (guestElement) {
+                        addReturnButton(guestElement);
+                        container.appendChild(guestElement);
+                        placedGuests.add(guestName);
+                    }
+                });
+            }
+        }
+    });
+
+    // Place unseated guests in their sidebars
+    allGuestsMap.forEach((guestElement, guestName) => {
+        if (!placedGuests.has(guestName)) {
+            const guestType = guestElement.classList.contains('groom') ? 'groom' : 'bride';
+            const targetContainer = guestType === 'groom' ? groomListContainer : brideListContainer;
+            addDeleteButton(guestElement);
+            targetContainer.appendChild(guestElement);
+        }
+    });
+
+    sortGuestsInContainer(groomListContainer);
+    sortGuestsInContainer(brideListContainer);
     updateAllCounters();
 }
 
@@ -86,8 +123,6 @@ function createGuestElement(type, name) {
 
     if (name === 'Long Vân' || name === 'Manal') {
         guestDiv.classList.add('vip-guest');
-    } else {
-        addDeleteButton(guestDiv);
     }
     return guestDiv;
 }
@@ -97,32 +132,37 @@ function addDeleteButton(guestElement) {
     const guestType = guestElement.classList.contains('groom') ? 'groom' : 'bride';
     if (guestName === 'Long Vân' || guestName === 'Manal') return;
 
+    guestElement.querySelector('.return-guest-button')?.remove();
+    if (guestElement.querySelector('.delete-guest-button')) return;
+
     const deleteBtn = document.createElement('span');
     deleteBtn.className = 'delete-guest-button';
-    deleteBtn.textContent = '−'; // Minus sign for delete
+    deleteBtn.textContent = '−';
     deleteBtn.onclick = () => deleteGuest(guestType, guestName);
     guestElement.appendChild(deleteBtn);
 }
 
 function addReturnButton(guestElement) {
+    guestElement.querySelector('.delete-guest-button')?.remove();
+    if (guestElement.querySelector('.return-guest-button')) return;
+
     const returnBtn = document.createElement('span');
     returnBtn.className = 'return-guest-button';
-    returnBtn.textContent = '×'; // Cross for return
+    returnBtn.textContent = '×';
     returnBtn.onclick = () => returnGuestToList(guestElement);
     guestElement.appendChild(returnBtn);
 }
 
-function returnGuestToList(guestElement) {
-    const guestType = guestElement.classList.contains('groom') ? 'groom' : 'bride';
-    const targetContainer = guestType === 'groom' ? groomListContainer : brideListContainer;
-    targetContainer.appendChild(guestElement);
-    const oldButton = guestElement.querySelector('.return-guest-button');
-    if (oldButton) oldButton.remove();
-    addDeleteButton(guestElement);
-    sortGuestsInContainer(targetContainer);
+async function returnGuestToList(guestElement) {
+    const guestName = guestElement.dataset.name;
+    const updatedConfig = { ...currentSeatingConfig };
 
-    const newSeatingConfig = buildSeatingConfigFromDOM();
-    saveToFirebase(newSeatingConfig);
+    for (const zoneId in updatedConfig) {
+        if (Array.isArray(updatedConfig[zoneId])) {
+            updatedConfig[zoneId] = updatedConfig[zoneId].filter(name => name !== guestName);
+        }
+    }
+    await saveSeatingConfig(updatedConfig);
 }
 
 function initializeDragAndDrop() {
@@ -131,20 +171,16 @@ function initializeDragAndDrop() {
         new Sortable(zone, {
             group: 'shared',
             animation: 150,
+            forceFallback: true,
             delay: 150,
             delayOnTouchOnly: true,
             touchStartThreshold: 5,
             scroll: true,
             scrollSensitivity: 100,
             scrollSpeed: 20,
-            onEnd: function (evt) {
-                const destinationZone = evt.to.closest('.drop-zone');
-
-                if (destinationZone && destinationZone.classList.contains('guest-list')) {
-                    sortGuestsInContainer(evt.to);
-                }
-                const newSeatingConfig = buildSeatingConfigFromDOM();
-                saveToFirebase(newSeatingConfig);
+            onEnd: async function () {
+                const newSeatingConfig = buildSeagittingConfigFromDOM();
+                await saveSeatingConfig(newSeatingConfig);
             },
             onMove: function (evt) {
                 const dragged = evt.dragged;
@@ -170,58 +206,25 @@ function initializeDragAndDrop() {
     });
 }
 
-function sortGuestsInContainer(container) {
-    const guests = Array.from(container.querySelectorAll('.guest'));
-    guests.sort((a, b) => customGuestSort(a.dataset.name, b.dataset.name));
-    guests.forEach(guest => container.appendChild(guest));
-}
-
 function buildSeatingConfigFromDOM() {
     const seating = {};
-    document.querySelectorAll('.drop-zone').forEach(zone => {
+    document.querySelectorAll('.table-drop-zone').forEach(zone => {
         const guestNames = [...zone.querySelectorAll('.guest')].map(g => g.dataset.name);
-        seating[zone.id] = guestNames;
+        if (guestNames.length > 0) {
+            seating[zone.id] = guestNames;
+        }
     });
     return seating;
 }
 
-async function saveToFirebase(seatingConfig) {
+async function saveSeatingConfig(seatingConfig) {
     await setDoc(doc(db, "seatingPlans", "currentPlan"), seatingConfig);
 }
 
-function applySeatingPlan() {
-    const allGuestsOnPage = new Map();
-    document.querySelectorAll('.guest').forEach(guest => allGuestsOnPage.set(guest.dataset.name, guest));
-
-    Object.keys(currentSeatingConfig).forEach(zoneId => {
-        const zoneElement = document.getElementById(zoneId);
-        if (!zoneElement) return;
-
-        let container;
-        if (zoneElement.classList.contains('table-drop-zone')) {
-            container = zoneElement.querySelector('.table-guests-container');
-        } else if (zoneElement.classList.contains('guest-list')) {
-            container = zoneElement.querySelector('.guest-container');
-        }
-
-        if (container) {
-            currentSeatingConfig[zoneId].forEach(guestName => {
-                const guestElement = allGuestsOnPage.get(guestName);
-                if (guestElement) {
-                    const oldButton = guestElement.querySelector('.delete-guest-button, .return-guest-button');
-                    if (oldButton) oldButton.remove();
-                    if (zoneElement.classList.contains('table-drop-zone')) {
-                        addReturnButton(guestElement); // Add '×' for guests at tables
-                    } else {
-                        addDeleteButton(guestElement); // Add '−' for guests in sidebars
-                    }
-                    container.appendChild(guestElement);
-                }
-            });
-        }
-    });
-    sortGuestsInContainer(groomListContainer);
-    sortGuestsInContainer(brideListContainer);
+function sortGuestsInContainer(container) {
+    const guests = Array.from(container.querySelectorAll('.guest'));
+    guests.sort((a, b) => customGuestSort(a.dataset.name, b.dataset.name));
+    guests.forEach(guest => container.appendChild(guest));
 }
 
 function updateAllCounters() {
@@ -231,10 +234,16 @@ function updateAllCounters() {
         placedGuestsCount += guestsInTable;
         table.querySelector('.table-counter').textContent = `${guestsInTable} / ${table.dataset.capacity}`;
     });
-    const totalGuests = allGuestsData.groom.length + allGuestsData.bride.length;
+    const totalGuests = (allGuestsData.groom.length || 0) + (allGuestsData.bride.length || 0);
     masterCounterEl.textContent = `${placedGuestsCount} / ${totalGuests}`;
     document.getElementById('groom-list-counter').textContent = `(${groomListContainer.children.length} / ${allGuestsData.groom.length})`;
     document.getElementById('bride-list-counter').textContent = `(${brideListContainer.children.length} / ${allGuestsData.bride.length})`;
+}
+
+function checkAndRender() {
+    if (dataLoaded.groom && dataLoaded.bride && dataLoaded.seating) {
+        renderAllGuestsAndSeating();
+    }
 }
 
 // --- App Initialization ---
@@ -242,16 +251,18 @@ initializeBoard();
 
 onSnapshot(doc(db, "seatingPlans", "currentPlan"), (docSnap) => {
     currentSeatingConfig = docSnap.exists() ? docSnap.data() : {};
-    applySeatingPlan();
-    updateAllCounters();
+    dataLoaded.seating = true;
+    checkAndRender();
 });
 
-onSnapshot(doc(db, "guests", "groom"), (docSnap) => {
-    const groomNames = docSnap.exists() ? docSnap.data().names.sort(customGuestSort) : [];
-    renderGuestLists(groomNames, allGuestsData.bride);
+onSnapshot(doc(db, "seatingPlans", "groom-guests"), (docSnap) => {
+    allGuestsData.groom = docSnap.exists() ? docSnap.data().names : [];
+    dataLoaded.groom = true;
+    checkAndRender();
 });
 
-onSnapshot(doc(db, "guests", "bride"), (docSnap) => {
-    const brideNames = docSnap.exists() ? docSnap.data().names.sort(customGuestSort) : [];
-    renderGuestLists(allGuestsData.groom, brideNames);
+onSnapshot(doc(db, "seatingPlans", "bride-guests"), (docSnap) => {
+    allGuestsData.bride = docSnap.exists() ? docSnap.data().names : [];
+    dataLoaded.bride = true;
+    checkAndRender();
 });

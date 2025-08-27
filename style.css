@@ -56,10 +56,17 @@ h1 { color: #5d4037; }
     font-weight: 500;
     user-select: none;
     word-break: break-word;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
+
+.guest:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
 .groom { background-color: #4a6c8c; }
 .bride { background-color: #c89f70; }
-.guest:active { cursor: grabbing; }
+.guest:active { cursor: grabbing; transform: scale(0.98); }
 .vip-guest {
     background-color: #d4af37; 
     border: 1px solid #c29d2e;
@@ -88,6 +95,11 @@ h1 { color: #5d4037; }
     width: 35px;
     flex-shrink: 0;
     cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.add-guest-form button:hover {
+    background-color: #4e342e;
 }
 
 #tables-container {
@@ -103,6 +115,7 @@ h1 { color: #5d4037; }
     min-height: 250px;
     display: flex;
     flex-direction: column;
+    transition: border-color 0.3s ease, background-color 0.3s ease;
 }
 .table-drop-zone h3 { text-align: center; margin: 0 0 10px 0; font-size: 1em; color: #666; }
 .table-counter { text-align: center; font-weight: bold; color: #888; margin-bottom: 10px; display: block; }
@@ -154,4 +167,7 @@ h1 { color: #5d4037; }
         min-width: 0;
     }
     #tables-container { grid-template-columns: repeat(2, 1fr); }
+}
+.sortable-fallback {
+    transition: none !important;
 }
